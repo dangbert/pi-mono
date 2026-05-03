@@ -19,6 +19,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	"moonshotai-cn": "Moonshot AI (China)",
 	opencode: "OpenCode Zen",
 	"opencode-go": "OpenCode Go",
+	ollama: "Ollama",
 	openai: "OpenAI",
 	openrouter: "OpenRouter",
 	"vercel-ai-gateway": "Vercel AI Gateway",

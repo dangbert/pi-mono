@@ -179,6 +179,7 @@ function hasDefaultModelProvider(providerId: string): providerId is keyof typeof
 }
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
+const OLLAMA_PROVIDER_ID = "ollama";
 
 const BUILT_IN_MODEL_PROVIDERS = new Set<string>(getProviders());
 
@@ -4355,6 +4356,15 @@ export class InteractiveMode {
 			});
 		}
 
+		// Always include Ollama in the API key list for onboarding, even before models.json is configured.
+		if (!options.some((o) => o.id === OLLAMA_PROVIDER_ID)) {
+			options.push({
+				id: OLLAMA_PROVIDER_ID,
+				name: "Ollama",
+				authType: "api_key",
+			});
+		}
+
 		const filteredOptions = authType ? options.filter((option) => option.authType === authType) : options;
 		return filteredOptions.sort((a, b) => a.name.localeCompare(b.name));
 	}
@@ -4425,6 +4435,8 @@ export class InteractiveMode {
 						await this.showLoginDialog(providerOption.id, providerOption.name);
 					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
 						this.showBedrockSetupDialog(providerOption.id, providerOption.name);
+					} else if (providerOption.id === OLLAMA_PROVIDER_ID) {
+						this.showOllamaSetupDialog(providerOption.id, providerOption.name);
 					} else {
 						await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
 					}
@@ -4567,6 +4579,103 @@ export class InteractiveMode {
 		this.editorContainer.addChild(dialog);
 		this.ui.setFocus(dialog);
 		this.ui.requestRender();
+	}
+
+	private async showOllamaSetupDialog(providerId: string, providerName: string): Promise<void> {
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			(_success, _message) => {
+				// Completion handled below
+			},
+			providerName,
+			"Ollama setup",
+		);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
+
+		const restoreEditor = () => {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
+
+		try {
+			const baseUrl = (
+				await dialog.showPrompt("Ollama base URL:", "http://localhost:11434/v1")
+			).trim();
+			const resolvedUrl = baseUrl || "http://localhost:11434/v1";
+
+			const modelsInput = (
+				await dialog.showPrompt("Models to add (comma-separated):", "llama3.1:8b, qwen2.5-coder:7b")
+			).trim();
+			const modelIds = modelsInput
+				.split(",")
+				.map((m) => m.trim())
+				.filter(Boolean);
+			if (modelIds.length === 0) {
+				throw new Error("At least one model ID is required.");
+			}
+
+			const modelsJsonPath = path.join(getAgentDir(), "models.json");
+			let config: Record<string, unknown> = { providers: {} };
+			if (fs.existsSync(modelsJsonPath)) {
+				try {
+					config = JSON.parse(fs.readFileSync(modelsJsonPath, "utf-8"));
+				} catch {
+					throw new Error(`Could not parse existing models.json at ${modelsJsonPath}`);
+				}
+			}
+
+			if (!config.providers || typeof config.providers !== "object") {
+				config.providers = {};
+			}
+			const providers = config.providers as Record<string, unknown>;
+
+			const existingOllama = providers[OLLAMA_PROVIDER_ID];
+			if (existingOllama && typeof existingOllama === "object") {
+				const existing = existingOllama as Record<string, unknown>;
+				const existingModels = Array.isArray(existing.models) ? existing.models : [];
+				const existingIds = new Set(existingModels.map((m: { id?: string }) => m.id));
+				for (const id of modelIds) {
+					if (!existingIds.has(id)) {
+						existingModels.push({ id });
+					}
+				}
+				existing.models = existingModels;
+				if (baseUrl) {
+					existing.baseUrl = resolvedUrl;
+				}
+			} else {
+				providers[OLLAMA_PROVIDER_ID] = {
+					baseUrl: resolvedUrl,
+					api: "openai-completions",
+					apiKey: "ollama",
+					models: modelIds.map((id) => ({ id })),
+				};
+			}
+
+			fs.mkdirSync(path.dirname(modelsJsonPath), { recursive: true });
+			fs.writeFileSync(modelsJsonPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+
+			this.session.modelRegistry.refresh();
+			await this.updateAvailableProviderCount();
+
+			restoreEditor();
+			this.showStatus(
+				`Ollama configured. Added ${modelIds.length} model(s) to ${modelsJsonPath}. Use /model to select one.`,
+			);
+		} catch (error: unknown) {
+			restoreEditor();
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			if (errorMsg !== "Login cancelled") {
+				this.showError(`Ollama setup failed: ${errorMsg}`);
+			}
+		}
 	}
 
 	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void> {
